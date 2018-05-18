@@ -1,0 +1,193 @@
+---
+title: "Kiva Crowdfunding and You: A Tutorial to Data Science"
+author: "Tristan Perry"
+output: html_document
+---
+
+```{r knitr_setup, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning=FALSE)
+```
+
+# Introduction
+
+This is my tutorial on the entire data science pipeline. I'll be showing off details on data parsing and management, exploratory data analysis, and hypothesis testing by demonstrating their use on a dataset involving Kiva crowdfunding borrowers.
+
+All of this can be done using RStudio and the following Libraries:
+
+- Tidyverse
+- Magrittr
+- Lubridate
+- Broom
+- ISLR
+- RandomForest
+
+Download the dataset from https://www.kaggle.com/kiva/data-science-for-good-kiva-crowdfunding and store it in your desired work folder. We'll load it into a data frame and sample it to show it off.
+
+```{r load_data, message=FALSE}
+library(tidyverse)
+library(magrittr)
+loan_tab <- read_csv("kiva_loans.csv")
+loan_tab %>% slice(1:10)
+```
+
+# Data Curation
+
+As you can see, there's a lot of extra data here we won't be using. Let's tidy up the data frame by removing a few attributes. We want to remove attributes with data that's too unique to each entity (urls or long descriptive attributes are good examples of these), or attributes with overly large amounts of missing data. 
+We'll sort the ids in numerical order. Additionally, a tidy version of borrower_genders would be useful. Instead of borrower_genders being a string list of male and female, let's create two new attributes, borrower_male and borrower_female, showing how much of each is present. 
+
+```{r tidy_data}
+tidy_tab <- loan_tab %>%
+  select(-tags) %>%
+  select(-use) %>%
+  select(-funded_amount) %>%
+  arrange(id) %>%
+  mutate(borrower_female = str_count(borrower_genders, "fe")) %>%
+  mutate(borrower_male = str_count(borrower_genders,"male") - borrower_female) %>%
+  select(-borrower_genders)
+tidy_tab
+```
+
+We removed the following columns:
+
+- use, as it's unusable data
+- tags, as it's ususable data
+- funded_amount, as it's the same data as loan_amount
+- borrower_genders, since we split the data into borrower_male and borrower_female
+
+# Exploratory Data Analysis
+
+With the data tidied, we can now perform some exploratory data analysis on it. Let's make some plots to determine trends between factors.
+
+First, let's perform an analysis using country and loan amount. There are too many countries to show on one boxplot, so we'll filter it to a few specific ones.
+
+```{r loan_country_plot}
+tidy_tab %>%
+  filter(country == "Bolivia" | country == "Colombia" | country == "El Salvador" | country == "Honduras" | country == "Nicaragua" | country == "Peru") %>%
+  filter(loan_amount < 2500) %>%
+  ggplot(mapping=aes(y=loan_amount, x=factor(country))) +
+    geom_boxplot() + 
+    labs(title="Loan Amount in Several Spanish Speaking Countries",
+         x = "Country",
+         y = "Loan Amount")
+```
+
+While it's possible to determine several statistical features of the data through this graph, an additional one with more specific detail may help us. For example: we can make the prediction that Bolivia has the highest average loan amount while Colombia has the lowest average loan amount.
+
+To test this prediction, let's find a scatter plot showing the mean loan amount vs the given countries. In order to find the mean loan amounts for each country, we first need to group the data by country before using summarize to create a new attribute mean_loan that'll serve as the mean loan_amount per country.
+
+```{r mean_loan_country_plot}
+tidy_tab %>%
+  filter(country == "Bolivia" | country == "Colombia" | country == "El Salvador" | country == "Honduras" | country == "Nicaragua" | country == "Peru") %>%
+  group_by(country) %>%
+  summarize(mean_loan = mean(loan_amount)) %>%
+  ggplot(mapping=aes(y=mean_loan, x=factor(country))) +
+    geom_point() + 
+    labs(title="Average Loan Amount in Several Spanish Speaking Countries",
+         x = "Country",
+         y = "Average Loan Amount")
+```
+
+With this, the data is clearer, and we can say with certainty that our prediction is accurate. Bolivia has the highest average loan amount of the selected countries, while Colombia has the lowest average loan amount.
+
+Lastly, let's use everything we've learned to determine whether the number of lenders has increased over time. We'll begin by finding the mean lender count for each date to narrow down the data.
+
+```{r lender_time_count}
+tidy_tab %>%
+  group_by(date) %>%
+  summarize(mean_count = mean(lender_count)) %>%
+  ggplot(mapping=aes(y=mean_count, x=date)) +
+    geom_smooth(method=lm) +
+    geom_point() + 
+    labs(title="Average Lender Count over Time",
+         x = "Year",
+         y = "Average Lender Count")
+```
+
+As it turns out, this data suggests that the Lender Count has actually decreased over time. However, how much can we rely on graphical information without looking into it deeper?
+
+# Machine Learning
+
+We can use linear regression for statistical analysis and exploratory data analysis. We can propose a hypothesis, and use linear regression to find the statistical values needed to support or reject the hypothesis. For example, if we propose the hypothesis "Lender Count in the United States increases over time," we can use linear regression to help prove or disprove this hypothesis.
+
+We can build a linear model using the lm function. So that we can use date in the linear model, we'll convert it into a numeric value using Lubridate functions. 0 will serve as January 1st, 2014, and will progress in day from there.
+
+```{r lm}
+library(lubridate)
+library(broom)
+
+date_lend <- tidy_tab %>%
+  filter(country == "United States") %>%
+  select(date, lender_count, term_in_months) %>%
+  mutate(total_days = (year(date) - 2014)*365 + yday(date))
+
+lend_fit <- lm(lender_count~total_days, data=date_lend)
+tidy(lend_fit)
+```
+
+This data tells us that on average, there's a -0.05592269 decrease in Lender Count every day.
+Should we trust in the data, though? We hypothesized that we should see an increase, so we'll need to make sure that our hypothesis is well founded.
+
+Our analysis shows that our value has a p-value of 2.284851e-120. In order to reject our hypothesis, we'd want a p-value of 0.05 (5.0e-2) or lower. In other words, we can reject our hypothesis because 2.284851e-120 <= 0.05.
+
+Let's the results of this graphically. If the hypothesis is really true, then a graph between residuals and fitted values should result in the residual values being centered around 0. To reach our residuals and fitted values, we use the augment function. This will give us the attributes .resid and .fitted, which we use below.
+
+```{r residual_fitted}
+lend_fit %>%
+  augment() %>%
+  ggplot(aes(x=.fitted, y=.resid)) +
+    geom_point() + 
+    labs(title="Residual Lender Count over Time (Fitted)",
+         x = "Date (Fitted)",
+         y = "Lender Count (Residual)")
+```
+
+It's somewhat apparent that the data is not centered around 0. There's a notable decrease from the center over time. As a result, the graph supports our rejection of the hypothesis.
+
+Instead of using linear methods for classification, let's use regression trees to predict a multifactor relationship between lender count and other factors (time, term in months). The tree function creates the tree, while plot and text handle the graphical elements of the tree.
+
+```{r rtree}
+library(tree)
+library(ISLR)
+
+lend_tree <- tree(lender_count~total_days + term_in_months, data=date_lend)
+plot(lend_tree)
+text(lend_tree, pretty=0, cex=1.3)
+```
+
+This partitions the factors into regions based on their values. With this tree, we can determine that Lender Count is estimated to be its mean within each of these data partitions. For example, if the term is fewer than 24.5 months and it's been less than 421.5 days since 2014, we can predict a Lender Count of approximately 89.54.
+
+Trees are easy to explain to non-data analysts, quick to point out interactions, and is very kind to missing data, but there are shortcomings to these regression trees. They don't have a lot of predictive power and can often end up unstable. To deal with these shortcomings, we'll make a Random Forest using the averages of multiple Decision Trees.
+
+Set a random seed ahead of time to help make outputs feel predictable when testing the Random Forest. You can modify the seed number to test the random factor, but it's not necessary. From here, you want to set up Training Sets and Testing Sets for the random forest to use. Many decision trees are built off the training set, and the testing set is compared to the average of the decision trees produced.
+
+After producing the random forest, test variable importance to determine which of your predictors affect the outcome most.
+
+```{r randomforest}
+set.seed(1234)
+train_indices <- sample(nrow(date_lend), nrow(date_lend)/2)
+train_set <- date_lend[train_indices,]
+test_set <- date_lend[-train_indices,]
+
+library(randomForest)
+lend_rf <- randomForest(lender_count~total_days + term_in_months, importance=TRUE, mtry=2, data=train_set)
+
+variable_importance <- importance(lend_rf)
+knitr::kable(head(round(variable_importance, digits=2)))
+```
+
+We can determine this way that total_days has more of an influence on Lender Count than term_in_months, as it has the higher cNodePurity.
+
+# Conclusion
+
+Hopefully this tutorial has given you a better grasp on data science and how it can be used to gather and group information.
+
+Through the processes detailed in this article, we've found that Kiva Crowdfunding's lender count in the United States is decreasing over time.
+
+There are other points of research still to analyze in this dataset, including the effects of gender or country on loan amount or lender count. I hope you will continue to look into areas that I did not, and that this page will serve as a useful reference for your research.
+
+
+
+
+
+
+
